@@ -2,18 +2,19 @@
 from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 datas, binaries, hiddenimports = [], [], []
-for package in ('customtkinter', 'llama_cpp', 'fastembed', 'onnxruntime'):
+for package in ('webview', 'llama_cpp', 'fastembed', 'onnxruntime'):
     package_datas, package_binaries, package_imports = collect_all(package)
     datas += package_datas
     binaries += package_binaries
     hiddenimports += package_imports
 datas += copy_metadata('fastembed') + copy_metadata('huggingface_hub')
+datas += [('web', 'web')]
 
 a = Analysis(
     ['app.py'], pathex=[], binaries=binaries, datas=datas,
     hiddenimports=hiddenimports + ['pypdf', 'huggingface_hub', 'self_test'],
     hookspath=[], hooksconfig={}, runtime_hooks=[],
-    excludes=['pytest', 'IPython', 'matplotlib', 'torch', 'tensorflow'], noarchive=False,
+    excludes=['pytest', 'IPython', 'matplotlib', 'torch', 'tensorflow', 'PyQt5', 'PyQt6', 'PySide2', 'PySide6', 'gtk', 'gi'], noarchive=False,
 )
 pyz = PYZ(a.pure)
 exe = EXE(

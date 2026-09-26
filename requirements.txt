@@ -1,5 +1,5 @@
 # Direct dependencies pinned to the validated environment.
-customtkinter==6.0.0
+pywebview==6.2.1
 fastembed==0.8.1
 huggingface_hub==1.32.0
 llama_cpp_python==0.3.35

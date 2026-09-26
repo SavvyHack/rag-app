@@ -71,27 +71,7 @@ def run():
                 engine.llm.close()
                 engine.llm = None
             if args.ui:
-                from app import StandaloneRAGApp
-                app = StandaloneRAGApp(store, auto_load=False)
-                app.withdraw()
-                app.update_idletasks()
-                assert 'Taylor' in app.chat_display.get('1.0', 'end')
-                other = app.store.create_chat()
-                app.select_chat(other)
-                assert 'Taylor' not in app.chat_display.get('1.0', 'end')
-                app.select_chat(chat)
-                assert 'Taylor' in app.chat_display.get('1.0', 'end')
-                app.assistant_id = app.store.add_message(chat, 'assistant', '', 'streaming')
-                app.busy = True
-                app.render_chat()
-                app.show_stream('First line\nSecond line')
-                app.show_stream('First line\nSecond line\nThird line')
-                displayed = app.chat_display.get('1.0', 'end')
-                assert displayed.count('First line') == 1
-                assert 'Third line' in displayed
-                app.busy = False
-                app.destroy()
-                report['checks'].append('desktop widgets, saved-chat switching, multiline streaming')
+                check_desktop_ui(store, chat, report)
             if engine.embedder:
                 # Release ONNX file handles before TemporaryDirectory cleanup on Windows.
                 engine.embedder = None
@@ -106,6 +86,56 @@ def run():
     output.write_text(json.dumps(report, indent=2), encoding='utf-8')
     if not report['passed']:
         raise SystemExit(1)
+
+
+def check_desktop_ui(store, chat, report):
+    """Exercise the actual WebView2 window and JS/Python bridge with synthetic data."""
+    import webview
+    from app import create_app
+    store.add_message(chat, 'assistant', '**Invoice** $40.50\n\n' + r'\[\frac{1}{2}\]')
+    window, controller = create_app(store, auto_load=False, hidden=True)
+    failures = []
+
+    def check():
+        def wait_for(expression, timeout=20):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if window.evaluate_js(expression):
+                    return
+                time.sleep(.15)
+            raise AssertionError('Desktop UI timed out: ' + expression)
+        try:
+            wait_for("Boolean(window.LocalRAG && document.querySelector('.assistant .katex'))")
+            assert window.evaluate_js("document.querySelector('.assistant:last-child strong').textContent") == 'Invoice'
+            assert window.evaluate_js("document.getElementById('messages').textContent.includes('Taylor')")
+            # Trigger bridge calls from the real DOM, then check persisted results.
+            window.evaluate_js("document.getElementById('new-folder').click(); document.getElementById('name-field').value='Smoke folder'; document.getElementById('dialog-form').requestSubmit(); true")
+            wait_for("document.getElementById('folders').textContent.includes('Smoke folder') && !document.getElementById('dialog').open")
+            assert store.folders()[0]['name'] == 'Smoke folder'
+            window.evaluate_js("document.getElementById('new-chat').click(); true")
+            wait_for("Boolean(document.querySelector('.welcome'))")
+            assert store.chat(controller.chat_id)['folder_id'] == store.folders()[0]['id']
+            controller.dispatch('select_folder', {'id':'all'})
+            controller.dispatch('select_chat', {'id':chat})
+            wait_for("document.getElementById('messages').textContent.includes('Taylor')")
+            with controller.lock:
+                controller.assistant_id = store.add_message(chat, 'assistant', '', 'streaming')
+                controller.busy, controller.job = True, 'answer'
+                controller._emit('stream', '**First line**\nSecond line')
+            wait_for("document.getElementById('messages').textContent.includes('Second line')")
+            controller._emit('stream', '**First line**\nSecond line\nThird line')
+            wait_for("document.getElementById('messages').textContent.includes('Third line')")
+            assert window.evaluate_js("document.getElementById('messages').textContent.split('First line').length - 1") == 1
+            report['checks'].append('native WebView2, offline Markdown/LaTeX, folder bridge, chat switching, multiline streaming')
+        except Exception:
+            failures.append(traceback.format_exc())
+        finally:
+            controller.busy = False
+            window.destroy()
+
+    webview.start(check, gui='edgechromium' if sys.platform == 'win32' else None, private_mode=True)
+    if failures:
+        raise AssertionError(failures[0])
 
 
 if __name__ == '__main__':

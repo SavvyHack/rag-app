@@ -6,11 +6,16 @@ A Windows desktop app for private local chat and questions about your files. No 
 
 Open `dist/OfflineRAG.exe`. The first launch loads **Qwen3.5 2B Q4_K_M**. A verified copy is in this project's `models` directory, which the executable can find. If you copy only the executable elsewhere, it downloads the selected model once into your user data folder. To avoid another download, copy the `models` folder next to the executable.
 
-The previous executable is preserved as `dist/OfflineRAG.previous.exe`.
+The previous executable is preserved as `dist/OfflineRAG.previous.exe`, and the version immediately before the frontend update is in `dist/OfflineRAG.before-frontend.exe`.
+
+The interface uses Microsoft Edge WebView2, which is already installed on this computer. Other Windows computers need the [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/). Markdown, equation rendering, code highlighting, and their fonts are bundled in the executable and work offline; no browser tab or CDN is required.
 
 ## Chats, files, and memory
 
 - **New chat** starts a separate conversation. All messages save automatically, including partial replies. Select a saved chat to resume it after closing or replacing the executable.
+- **Folders** is a separate sidebar section. Use **+** to create a folder, its **…** button to rename or delete it, and **Move** above a conversation to organise an existing chat. A new chat is created in the selected folder. **All chats** and **Unfiled** provide quick views; search filters chat titles within the selected section. Deleting a folder moves its chats to Unfiled without deleting messages, notes, or attachments. Folder membership and the selected section persist across restarts. Existing chats start in Unfiled.
+- Responses render Markdown headings, bold/italic text, lists, task lists, quotes, links, tables, and highlighted code. LaTeX supports `$…$`, `$$…$$`, `\(…\)`, `\[…\]`, supported `\begin{…}` environments, and fenced `math`, `latex`, or `tex` blocks. Ordinary dollar amounts stay as currency. KaTeX supports mathematical LaTeX, not complete TeX documents or arbitrary packages; unsupported commands remain readable. Raw HTML is displayed as text, and remote images are not fetched automatically.
+- **Copy** preserves the original message; **Copy code** copies just the code. Formatting updates during streaming and when old chats reopen. The conversation follows new output only while you are at the bottom; **Latest response** takes you back. The composer supports **Enter** to send and **Shift+Enter** for a new line. Unsent drafts remain available while switching chats during the current session.
 - **Attach files** accepts multiple PDF, TXT, MD/Markdown, HTML/HTM, JSON, JSONL/NDJSON, CSV/TSV, YAML/YML, XML, LOG, and RST files. Extracted text is stored with the chat, so you can move or delete the original files. Use **Files** to review or remove attachments. Duplicate contents are not indexed twice in one chat.
 - **Memory notes** saves up to 1,000 characters of facts or preferences for that chat. Notes are bounded to 384 model tokens; unusually token-dense notes may be excerpted. Recent complete exchanges and relevant excerpts from older exchanges are recalled automatically. Each chat has separate memory and documents.
 - The context selector offers **4,096**, **8,192** (default), and **16,384** tokens. Select **Load / retry** to apply model or context changes. Prompts use the actual model tokenizer and reserve room for the reply. Long history and documents are selectively excerpted; the whole transcript remains saved. Replies allow up to 768 tokens; ask to continue for longer answers.
@@ -46,9 +51,12 @@ Sources: [Qwen3.5 2B model card](https://huggingface.co/Qwen/Qwen3.5-2B), [2B GG
 
 ## Development and verification
 
-The existing `venv` contains the dependencies. In PowerShell:
+The local `venv` contains Python dependencies. Frontend development uses Node.js 22.12 or newer; end users only need the executable and WebView2. In PowerShell:
 
 ```powershell
+npm ci
+npm run build
+npm test
 .\venv\Scripts\python.exe app.py
 .\venv\Scripts\python.exe -m unittest discover -s tests -v
 .\venv\Scripts\python.exe self_test.py --output build\source-smoke.json --inference --semantic --ui
@@ -57,17 +65,19 @@ The existing `venv` contains the dependencies. In PowerShell:
 
 The smoke test uses temporary synthetic chats, exercises real CPU inference, and can download the embedding model. The frozen executable supports the same `--self-test --output <absolute-path> --inference --semantic --ui` checks. It never uses your real chat database during this test.
 
-`requirements.txt` contains the direct pinned dependencies. `requirements-lock.txt` records the original installed environment's full pins for reference. Building llama-cpp-python without a matching wheel requires CMake and a supported C++ compiler.
+`requirements.txt` contains the direct pinned dependencies. `requirements-lock.txt` records the validated Python environment's full pins. `package-lock.json` pins frontend and browser-test dependencies. `npm run build` produces the checked-in `web/assets` bundle and fonts; rebuild it after editing `frontend/`. The browser tests use installed Microsoft Edge and synthetic chats. Building llama-cpp-python without a matching wheel requires CMake and a supported C++ compiler.
 
-Implementation: `app.py` handles the UI and worker queue; `storage.py` owns SQLite transactions; `documents.py` extracts and chunks files; `rag_engine.py` handles downloads, token budgets, memory, retrieval, and inference. PyInstaller includes CustomTkinter assets and native inference/embedding libraries. Detailed failures go to the rotating `app.log`; the UI offers **Error details** and **Load / retry**.
+Implementation: `app.py` hosts the bundled interface in a native WebView2 window; `controller.py` serialises desktop actions and manages background workers; `frontend/` implements the layout and safe rich-text rendering; `storage.py` owns SQLite transactions and the additive folder migration. `documents.py` and `rag_engine.py` handle extraction, retrieval, memory, and inference. PyInstaller includes web assets, math fonts, WebView2 integration, and native inference/embedding libraries. Detailed failures go to the rotating `app.log`; the UI offers **View details** and **Model settings → Load / retry**. Model controls are also available from the model name below the composer; semantic search is under **Files**; rename, export, and delete are under the chat's **…** menu.
 
 ## Setup Instructions
 ```powershell
 py -3.14 -m venv venv
 
-python -m pip install --upgrade pip
+.\venv\Scripts\python.exe -m pip install --upgrade pip
 
-python -m pip install --prefer-binary -r requirements.txt --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+.\venv\Scripts\python.exe -m pip install --prefer-binary -r requirements.txt --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 
-python -m PyInstaller --noconfirm OfflineRAG.spec
+npm ci
+npm run build
+.\build.ps1
 ```

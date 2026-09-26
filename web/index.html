@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Offline Local RAG</title>
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <aside class="sidebar" aria-label="Chat library">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">o<span>r</span></span><div>Local RAG<small>A space for your knowledge</small></div></div>
+    <button class="primary new-chat" id="new-chat"><span data-icon="plus"></span> New chat <kbd>Ctrl N</kbd></button>
+    <label class="search"><span data-icon="search"></span><input id="search" type="search" placeholder="Search chats" aria-label="Search chats"></label>
+    <nav class="library" aria-label="Library"><button id="all-chats" class="nav-row"><span data-icon="chats"></span>All chats<span class="count" id="all-count"></span></button><button id="unfiled" class="nav-row"><span data-icon="inbox"></span>Unfiled<span class="count" id="unfiled-count"></span></button></nav>
+    <section class="folder-section" aria-labelledby="folders-label"><div class="section-heading"><h2 id="folders-label">Folders</h2><button id="new-folder" class="icon-button" aria-label="New folder" title="New folder"><span data-icon="plus"></span></button></div><div id="folders"></div></section>
+    <section class="chats-section" aria-labelledby="chats-label"><div class="section-heading"><h2 id="chats-label">All chats</h2><span id="filtered-count" class="count"></span></div><div id="chats"></div></section>
+    <div class="sidebar-footer"><span data-icon="shield"></span><div>Yours, and only yours<small>Chats saved on this device</small></div></div>
+  </aside>
+  <main>
+    <header class="chat-header"><div class="title-area"><div class="eyebrow" id="breadcrumb">Your library</div><h1 id="chat-title">New chat</h1></div><div class="header-actions"><button id="move-chat" class="quiet"><span data-icon="folder"></span>Move</button><button id="chat-options" class="icon-button" title="Chat options" aria-label="Chat options"><span data-icon="more"></span></button><span class="header-divider"></span><button id="settings" class="icon-button" title="Model settings" aria-label="Model settings"><span data-icon="settings"></span></button></div></header>
+    <div class="context-bar"><div><button class="quiet" id="files"><span data-icon="file"></span><span id="file-count">Files</span></button><button class="quiet" id="memory"><span data-icon="note"></span>Memory<span id="memory-dot" class="dot" hidden></span></button></div><span class="local-badge"><span class="dot"></span>Runs locally</span></div>
+    <div id="error-banner" class="error-banner" hidden><span id="error-summary"></span><button id="error-details" class="quiet">View details</button></div>
+    <div class="conversation" id="conversation" tabindex="0" aria-label="Conversation"><div id="messages" class="messages"></div></div>
+    <div class="composer-area"><button id="jump-latest" class="jump-latest" hidden>↓ Latest response</button><div class="composer"><label class="sr-only" for="prompt">Message</label><textarea id="prompt" rows="2" placeholder="Ask anything, or explore your documents…"></textarea><div class="composer-tools"><button id="attach" class="icon-button" title="Attach files" aria-label="Attach files"><span data-icon="attach"></span></button><button class="model-pill" id="model-button"><span class="dot" id="model-dot"></span><span id="model-label">Loading…</span><span data-icon="chevron"></span></button><div class="composer-spacer"></div><span class="key-hint">Shift + Enter for a new line</span><button id="send" class="send-button" aria-label="Send message" disabled><span data-icon="arrow"></span></button><button id="stop" class="stop-button" hidden><span class="stop-square"></span>Stop</button></div></div><div class="composer-footer"><span id="status" role="status">Connecting to your local workspace…</span><span>Answers can be mistaken. Check sources.</span></div></div>
+  </main>
+  <dialog id="dialog" aria-labelledby="dialog-title"><form id="dialog-form"><div class="dialog-heading"><h2 id="dialog-title"></h2><button class="icon-button" type="button" id="dialog-close" aria-label="Close dialog"><span data-icon="close"></span></button></div><div id="dialog-body"></div><p id="dialog-error" class="dialog-error" role="alert" hidden></p><div class="dialog-actions" id="dialog-actions"></div></form></dialog>
+  <div id="toast" role="status" hidden></div>
+  <script src="assets/app.js"></script>
+</body>
+</html>

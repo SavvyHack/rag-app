@@ -33,6 +33,8 @@ class Store:
         with self.connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
+                CREATE TABLE IF NOT EXISTS folders (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL, created TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS chats (
                     id TEXT PRIMARY KEY, title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '',
                     created TEXT NOT NULL, updated TEXT NOT NULL);
@@ -51,8 +53,13 @@ class Store:
                     embedding BLOB, embedding_model TEXT);
                 CREATE INDEX IF NOT EXISTS chunks_document ON chunks(document_id);
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                PRAGMA user_version=1;
             """)
+            # Additive migration: existing transcripts, documents and notes stay in place.
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(chats)')}
+            if 'folder_id' not in columns:
+                db.execute('ALTER TABLE chats ADD COLUMN folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL')
+            db.execute('CREATE INDEX IF NOT EXISTS chats_folder ON chats(folder_id)')
+            db.execute('PRAGMA user_version=2')
 
     @contextmanager
     def connect(self):
@@ -74,11 +81,50 @@ class Store:
         with self.connect() as db:
             db.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, json.dumps(value)))
 
-    def create_chat(self):
+    def create_chat(self, folder_id=None):
         chat_id = uuid.uuid4().hex
         with self.connect() as db:
-            db.execute("INSERT INTO chats VALUES (?, ?, '', ?, ?)", (chat_id, "New chat", now(), now()))
+            db.execute("INSERT INTO chats(id,title,notes,created,updated,folder_id) VALUES (?, ?, '', ?, ?, ?)",
+                       (chat_id, "New chat", now(), now(), folder_id))
         return chat_id
+
+    def folders(self):
+        with self.connect() as db:
+            return [dict(row) for row in db.execute('''
+                SELECT f.*, count(c.id) AS chat_count FROM folders f
+                LEFT JOIN chats c ON c.folder_id=f.id GROUP BY f.id
+                ORDER BY f.name COLLATE NOCASE, f.id''')]
+
+    @staticmethod
+    def _folder_name(name):
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
+            raise ValueError('Folder names must be between 1 and 80 characters.')
+        return name.strip()
+
+    def create_folder(self, name):
+        name = self._folder_name(name)
+        folder_id = uuid.uuid4().hex
+        with self.connect() as db:
+            db.execute('INSERT INTO folders VALUES (?, ?, ?)', (folder_id, name, now()))
+        return folder_id
+
+    def rename_folder(self, folder_id, name):
+        name = self._folder_name(name)
+        with self.connect() as db:
+            if not db.execute('UPDATE folders SET name=? WHERE id=?', (name, folder_id)).rowcount:
+                raise ValueError('This folder no longer exists.')
+
+    def delete_folder(self, folder_id):
+        """Removing an organisational folder never deletes its conversations."""
+        with self.connect() as db:
+            db.execute('DELETE FROM folders WHERE id=?', (folder_id,))
+
+    def move_chat(self, chat_id, folder_id=None):
+        with self.connect() as db:
+            if folder_id and not db.execute('SELECT 1 FROM folders WHERE id=?', (folder_id,)).fetchone():
+                raise ValueError('This folder no longer exists.')
+            if not db.execute('UPDATE chats SET folder_id=? WHERE id=?', (folder_id, chat_id)).rowcount:
+                raise ValueError('This chat no longer exists.')
 
     def chats(self):
         with self.connect() as db:

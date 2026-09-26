@@ -1,0 +1,24 @@
+{
+  "name": "rag-app",
+  "version": "1.0.0",
+  "engines": {"node": ">=22.12.0"},
+  "description": "Offline Local RAG desktop frontend",
+  "scripts": {
+    "build": "node scripts/build-frontend.mjs",
+    "test": "playwright test"
+  },
+  "keywords": [],
+  "author": "",
+  "dependencies": {
+    "dompurify": "3.4.16",
+    "highlight.js": "11.12.0",
+    "katex": "0.18.9",
+    "markdown-it": "15.0.2",
+    "markdown-it-texmath": "1.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "esbuild": "0.28.2"
+  },
+  "private": true
+}
