@@ -60,3 +60,14 @@ The smoke test uses temporary synthetic chats, exercises real CPU inference, and
 `requirements.txt` contains the direct pinned dependencies. `requirements-lock.txt` records the original installed environment's full pins for reference. Building llama-cpp-python without a matching wheel requires CMake and a supported C++ compiler.
 
 Implementation: `app.py` handles the UI and worker queue; `storage.py` owns SQLite transactions; `documents.py` extracts and chunks files; `rag_engine.py` handles downloads, token budgets, memory, retrieval, and inference. PyInstaller includes CustomTkinter assets and native inference/embedding libraries. Detailed failures go to the rotating `app.log`; the UI offers **Error details** and **Load / retry**.
+
+## Setup Instructions
+```powershell
+py -3.14 -m venv venv
+
+python -m pip install --upgrade pip
+
+python -m pip install --prefer-binary -r requirements.txt --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
+python -m PyInstaller --noconfirm OfflineRAG.spec
+```
