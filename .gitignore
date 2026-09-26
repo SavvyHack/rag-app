@@ -1,0 +1,8 @@
+venv/
+.venv/
+__pycache__/
+build/
+dist/
+models/
+*.sqlite3*
+*.log
