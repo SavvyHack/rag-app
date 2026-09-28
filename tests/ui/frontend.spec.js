@@ -36,6 +36,10 @@ async function boot(page, initial=fixture()) {
       if(name==='select_chat'){s.chat=s.chats.find(c=>c.id===payload.id);s.messages=[];}
       if(name==='new_chat'){const c={id:'newchat',title:'New chat',notes:'',folder_id:['all','unfiled'].includes(s.folder)?null:s.folder,updated:new Date().toISOString()};s.chats.push(c);s.chat=c;s.messages=[];}
       if(name==='send'){s.messages.push({id:88,role:'user',content:payload.text,status:'complete'},{id:89,role:'assistant',content:'',status:'streaming'});s.busy=true;s.job='answer';}
+      if(name==='set_mode'){s.chat.mode=payload.mode;s.chat.workspace='C:/Local workspace';}
+      if(name==='approve_tool'||name==='reject_tool'){s.activity.events.find(e=>e.id===payload.id).status=name==='approve_tool'?'approved':'rejected';}
+      if(name==='undo_edit'){s.activity.events.find(e=>e.id===payload.id).status='undone';}
+      if(name==='offline_only')s.offline_only=payload.enabled;
       if(name==='stop'){s.busy=false;s.job=null;s.messages.at(-1).status='stopped';}
       for(const f of s.folders)f.chat_count=s.chats.filter(c=>c.folder_id===f.id).length;
       s.revision++;return {ok:true,state:structuredClone(s)};
@@ -147,4 +151,51 @@ test('reading older messages is not interrupted by streaming',async({page})=>{
   await page.evaluate(()=>{const s=window.testState;s.messages.at(-1).content+='\n\n**New text**';s.revision++;window.LocalRAG.render(structuredClone(s));});
   expect(await page.locator('#conversation').evaluate(el=>el.scrollTop)).toBe(0);
   await expect(page.locator('#jump-latest')).toBeVisible();
+});
+
+test('agent mode reveals the local workspace and offline workflows',async({page})=>{
+  await boot(page);
+  await page.getByLabel('Assistant mode').selectOption('agent');
+  await expect(page.getByRole('complementary',{name:'Project workspace'})).toBeVisible();
+  await expect(page.locator('#workspace-location')).toContainText('Local workspace');
+  await page.getByRole('button',{name:'Workflows',exact:true}).click();
+  await page.getByRole('button',{name:'Review a project',exact:true}).click();
+  await expect(page.getByLabel('Assistant mode')).toHaveValue('plan');
+  await expect(page.locator('#prompt')).toHaveValue(/Review the project/);
+  await page.screenshot({path:'build/ui-workspace.png',fullPage:true});
+});
+
+test('pending edits need a deliberate review click and escape file contents',async({page})=>{
+  const s=fixture();s.busy=true;s.job='agent';s.chat.mode='agent';s.chat.workspace='C:/Project';
+  s.activity={runs:[{id:'run',status:'waiting',plan:'1. Read\n2. Propose\n3. Verify'}],events:[{id:'event1',name:'write_file',status:'pending',detail:{workspace:'C:/Project',summary:'Write index.html',path:'index.html',preview:'+<script>window.pwned=true</script>'}}]};
+  await boot(page,s);
+  await expect(page.locator('#workspace-panel')).toBeVisible();
+  expect(await page.evaluate(()=>window.actions.some(a=>a.name==='approve_tool'))).toBe(false);
+  await page.getByRole('button',{name:'Review action'}).click();
+  await expect(page.locator('.review-preview')).toContainText('<script>');
+  expect(await page.evaluate(()=>window.pwned)).toBeUndefined();
+  await page.screenshot({path:'build/ui-review.png',fullPage:true});
+  await page.getByRole('button',{name:'Apply change',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>window.actions.at(-1))).toEqual({name:'approve_tool',payload:{id:'event1'}});
+});
+
+test('command review can reject without executing and stop remains available',async({page})=>{
+  const s=fixture();s.busy=true;s.job='agent';
+  s.activity={runs:[],events:[{id:'command1',name:'run_command',status:'pending',detail:{summary:'Run command',workspace:'C:/Project',preview:'python -m unittest'}}]};
+  await boot(page,s);
+  await expect(page.getByRole('button',{name:'Stop',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Review action'}).click();
+  await expect(page.locator('#dialog-body')).toContainText('change files elsewhere');
+  await page.getByRole('button',{name:'Reject',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>window.actions.at(-1))).toEqual({name:'reject_tool',payload:{id:'command1'}});
+});
+
+test('completed file edits expose undo and scanned attachments explain automatic OCR',async({page})=>{
+  const s=fixture();s.activity={runs:[],events:[{id:'edit1',name:'write_file',status:'applied',detail:{summary:'Saved greeting.md',path:'greeting.md',preview:'+Hello'}}]};
+  await boot(page,s);
+  await page.getByRole('button',{name:'Workspace',exact:true}).click();
+  await page.getByRole('button',{name:'Undo edit'}).click();
+  await expect.poll(()=>page.evaluate(()=>window.actions.at(-1))).toEqual({name:'undo_edit',payload:{id:'edit1'}});
+  await page.getByRole('button',{name:'Files · 1',exact:true}).click();
+  await expect(page.locator('#dialog-body')).toContainText('read automatically with on-device OCR');
 });

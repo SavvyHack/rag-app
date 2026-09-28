@@ -6,6 +6,8 @@ import threading
 
 from documents import SUPPORTED
 from rag_engine import Engine, MODELS
+from workspace import Workspace
+from agent import LocalAgent
 
 
 class ChatController:
@@ -22,6 +24,8 @@ class ChatController:
         self.revision = 0
         self.assistant_id = None
         self.stream = None
+        self.workspace_files = []
+        self.workspace_cache = None
         chats = store.chats()
         saved = store.setting('active_chat')
         self.chat_id = saved if saved and store.chat(saved) else (chats[0]['id'] if chats else store.create_chat())
@@ -54,6 +58,14 @@ class ChatController:
                         message['content'] = self.stream
             ready = bool(self.engine.llm)
             context = self.store.setting('context', 8192)
+            chat = self.store.chat(self.chat_id)
+            project = chat.get('workspace', '')
+            if project != self.workspace_cache:
+                self.workspace_cache = project
+                try:
+                    self.workspace_files = Workspace(project).files(300) if project else []
+                except (OSError, ValueError):
+                    self.workspace_files = []
             return {
                 'revision': self.revision, 'chat': self.store.chat(self.chat_id),
                 'chats': self.store.chats(), 'folders': self.store.folders(), 'folder': self.folder,
@@ -64,6 +76,9 @@ class ChatController:
                 'model': self.engine.profile if ready else self._profile(),
                 'context': self.engine.context_size if ready else (context if context in (4096, 8192, 16384) else 8192),
                 'models': [{'id': key, 'label': spec.label} for key, spec in MODELS.items()],
+                'workspace_files': self.workspace_files,
+                'activity': self.store.activity(self.chat_id),
+                'offline_only': self.store.setting('offline_only', True),
             }
 
     def _emit(self, kind, value):
@@ -72,13 +87,15 @@ class ChatController:
                 self.stream = value
             elif kind == 'status':
                 self.status = value
+            elif kind == 'activity':
+                self.workspace_cache = None
             self._touch()
 
     def _start(self, kind, function):
         self.busy, self.job = True, kind
         self.error = ''
         self.status = {'answer': 'Thinking…', 'load': 'Preparing model…',
-                       'import': 'Reading files…', 'semantic': 'Preparing semantic search…'}[kind]
+                       'import': 'Reading files…', 'semantic': 'Preparing semantic search…', 'agent': 'Starting local task…'}[kind]
         self.cancel.clear()
         def work():
             try:
@@ -91,7 +108,7 @@ class ChatController:
                     elif kind == 'import':
                         self.status = f"Import {'stopped' if result['cancelled'] else 'finished'} · {len(result['successes'])} files · {len(result['errors'])} errors"
                         self.error = '\n'.join(result['errors'])
-                    elif kind == 'answer' and result['status'] == 'stopped':
+                    elif kind in {'answer', 'agent'} and result['status'] == 'stopped':
                         self.status = 'Stopped. Your partial response is saved.'
                     elif kind == 'semantic' and result['cancelled']:
                         self.status = 'Indexing stopped. Completed sections are saved.'
@@ -131,6 +148,11 @@ class ChatController:
                 if action == 'stop':
                     self.cancel.set()
                     self.status = 'Stopping after the current processing step…'
+                elif action in {'approve_tool', 'reject_tool'}:
+                    event = self.store.event(payload.get('id'), self.chat_id)
+                    if not event or event['status'] != 'pending' or not self.busy or self.job != 'agent':
+                        raise ValueError('This action is no longer waiting for review.')
+                    self.store.update_event(event['id'], 'approved' if action == 'approve_tool' else 'rejected')
                 elif action == 'open_link':
                     from urllib.parse import urlsplit
                     import webbrowser
@@ -180,6 +202,55 @@ class ChatController:
                     if len(notes) > 1000:
                         raise ValueError('Keep memory notes under 1,000 characters.')
                     self.store.update_chat(self.chat_id, notes=notes)
+                elif action == 'set_mode':
+                    mode = payload.get('mode')
+                    self.store.set_mode(self.chat_id, mode)
+                    if mode != 'chat' and not self.store.chat(self.chat_id)['workspace']:
+                        project = self.store.directory / 'workspaces' / self.chat_id
+                        project.mkdir(parents=True, exist_ok=True)
+                        self.store.set_workspace(self.chat_id, project.resolve())
+                elif action == 'choose_workspace':
+                    import webview
+                    paths = self.window.create_file_dialog(webview.FileDialog.FOLDER)
+                    if paths:
+                        project = Workspace(paths[0] if not isinstance(paths, str) else paths)
+                        self.store.set_workspace(self.chat_id, project.root)
+                        self.workspace_cache = None
+                elif action == 'refresh_workspace':
+                    self.workspace_cache = None
+                elif action == 'open_workspace':
+                    import os
+                    project = Workspace(self.store.chat(self.chat_id)['workspace'])
+                    if hasattr(os, 'startfile'):
+                        os.startfile(str(project.root))
+                    else:
+                        raise ValueError('Opening a project folder is currently supported on Windows.')
+                elif action == 'read_workspace_file':
+                    project = Workspace(self.store.chat(self.chat_id)['workspace'])
+                    return {'ok': True, 'file': project.read(payload.get('path'), payload.get('start', 1))}
+                elif action == 'undo_edit':
+                    event = self.store.event(payload.get('id'), self.chat_id)
+                    if not event or event['name'] != 'write_file' or event['status'] != 'applied':
+                        raise ValueError('This edit cannot be undone.')
+                    project = Workspace(self.store.chat(self.chat_id)['workspace'])
+                    project.apply(event['detail'], undo=True)
+                    self.store.update_event(event['id'], 'undone')
+                    self.workspace_cache = None
+                    self.status = 'Original file restored.'
+                elif action == 'offline_only':
+                    self.store.set_setting('offline_only', bool(payload.get('enabled')))
+                elif action == 'fork_chat':
+                    original = self.store.chat(self.chat_id)
+                    new = self.store.create_chat(original['folder_id'])
+                    for message in self.store.messages(self.chat_id):
+                        self.store.add_message(new, message['role'], message['content'], message['status'])
+                    self.store.update_chat(new, title=original['title'] + ' (copy)', notes=original['notes'])
+                    self.store.set_workspace(new, original['workspace'])
+                    self.store.set_mode(new, original['mode'])
+                    for document in self.store.documents(self.chat_id):
+                        chunks = [c for c in self.store.chunks(self.chat_id) if c['document_id'] == document['id']]
+                        self.store.add_document(new, document['name'], document['digest'], [(c['location'], c['content']) for c in chunks])
+                    self._select(new)
                 elif action == 'remove_document':
                     self.store.delete_document(self.chat_id, payload['id'])
                 elif action == 'load':
@@ -197,7 +268,10 @@ class ChatController:
                     self.assistant_id = self.store.begin_turn(self.chat_id, query)
                     chat_id, assistant_id = self.chat_id, self.assistant_id
                     self.stream = ''
-                    self._start('answer', lambda: self.engine.answer(chat_id, query, assistant_id, self._emit, self.cancel))
+                    if self.store.chat(chat_id)['mode'] in {'agent', 'plan'}:
+                        self._start('agent', lambda: LocalAgent(self.store, self.engine).answer(chat_id, query, assistant_id, self._emit, self.cancel))
+                    else:
+                        self._start('answer', lambda: self.engine.answer(chat_id, query, assistant_id, self._emit, self.cancel))
                 elif action == 'semantic':
                     chat_id = self.chat_id
                     self._start('semantic', lambda: self.engine.reindex(chat_id, self._emit, self.cancel))

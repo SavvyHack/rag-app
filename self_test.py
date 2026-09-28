@@ -17,6 +17,8 @@ def run():
     parser.add_argument('--inference', action='store_true')
     parser.add_argument('--semantic', action='store_true')
     parser.add_argument('--ui', action='store_true')
+    parser.add_argument('--ocr', action='store_true')
+    parser.add_argument('--agent', action='store_true')
     args = parser.parse_args()
     if sys.stdout is None:
         sys.stdout = open(os.devnull, 'w')
@@ -47,6 +49,17 @@ def run():
             engine = Engine(store)
             assert 'ORCHID-728' in engine.retrieve(chat, 'launch code', [])[0]['content']
             report['checks'].append('saved document retrieval')
+            if args.ocr:
+                from PIL import Image, ImageDraw, ImageFont
+                scan = Image.new('RGB', (1600, 800), 'white')
+                ImageDraw.Draw(scan).text((100, 150), 'Invoice total 238.50\nReference ORCHID 728',
+                    font=ImageFont.truetype('C:/Windows/Fonts/arial.ttf', 56), fill='black', spacing=30)
+                scan_path = root / 'scan.pdf'
+                scan.save(scan_path)
+                _, scanned_chunks = extract_document(scan_path)
+                assert '238.50' in scanned_chunks[0][1], scanned_chunks
+                assert 'OCR' in scanned_chunks[0][0]
+                report['checks'].append('native offline scanned PDF OCR, numeric text and page citations')
             if args.semantic:
                 engine.reindex(chat, lambda *_: None, threading.Event())
                 assert store.chunks(chat)[0]['embedding']
@@ -63,6 +76,31 @@ def run():
                 assert 'ORCHID-728' in response, response
                 assert '<think>' not in response, response
                 assert store.messages(chat)[-1]['status'] == 'complete'
+            if args.agent:
+                from agent import LocalAgent
+                if not engine.llm:
+                    engine.load('balanced', 8192, lambda *_: None)
+                agent_chat = store.create_chat()
+                project = root / 'project'
+                project.mkdir()
+                store.set_workspace(agent_chat, project)
+                store.set_mode(agent_chat, 'agent')
+                request = 'Create greeting.md containing exactly Hello ORCHID-728. Use write_file to create it, read_file to verify, then finish. No commands are needed.'
+                assistant = store.begin_turn(agent_chat, request)
+                def review(kind, value):
+                    if kind == 'status' and 'Review the proposed' in value:
+                        event = store.activity(agent_chat)['events'][0]
+                        # Only authorize this synthetic fixture, never arbitrary model commands.
+                        detail = store.event(event['id'], agent_chat)['detail']
+                        allowed = event['name'] == 'write_file' and detail.get('path') == 'greeting.md'
+                        store.update_event(event['id'], 'approved' if allowed else 'rejected')
+                result = LocalAgent(store, engine).answer(agent_chat, request, assistant, review, threading.Event())
+                report['agent_status'] = result['status']
+                report['agent_activity'] = store.activity(agent_chat)
+                assert result['status'] == 'complete', result
+                assert 'Hello ORCHID-728' in (project / 'greeting.md').read_text(), store.activity(agent_chat)
+                report['checks'].append('real local model proposes reviewed file edit, verifies file and finishes')
+            if args.inference or args.agent:
                 builder = PromptBuilder(engine.llm, 8192)
                 history = store.messages(chat) * 60
                 _, _, tokens = builder.build('What is my name?', history, 'Use short answers.', engine.retrieve(chat, 'code', []), True)

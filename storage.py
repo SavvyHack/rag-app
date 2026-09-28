@@ -53,13 +53,24 @@ class Store:
                     embedding BLOB, embedding_model TEXT);
                 CREATE INDEX IF NOT EXISTS chunks_document ON chunks(document_id);
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runs (
+                    id TEXT PRIMARY KEY, chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+                    status TEXT NOT NULL, plan TEXT NOT NULL DEFAULT '', created TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS tool_events (
+                    id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL, status TEXT NOT NULL, detail TEXT NOT NULL, created TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS tool_events_run ON tool_events(run_id, created);
             """)
             # Additive migration: existing transcripts, documents and notes stay in place.
             columns = {row['name'] for row in db.execute('PRAGMA table_info(chats)')}
             if 'folder_id' not in columns:
                 db.execute('ALTER TABLE chats ADD COLUMN folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL')
             db.execute('CREATE INDEX IF NOT EXISTS chats_folder ON chats(folder_id)')
-            db.execute('PRAGMA user_version=2')
+            if 'workspace' not in columns:
+                db.execute("ALTER TABLE chats ADD COLUMN workspace TEXT NOT NULL DEFAULT ''")
+            if 'mode' not in columns:
+                db.execute("ALTER TABLE chats ADD COLUMN mode TEXT NOT NULL DEFAULT 'chat'")
+            db.execute('PRAGMA user_version=3')
 
     @contextmanager
     def connect(self):
@@ -207,3 +218,56 @@ class Store:
     def delete_document(self, chat_id, doc_id):
         with self.connect() as db:
             db.execute("DELETE FROM documents WHERE id=? AND chat_id=?", (doc_id, chat_id))
+
+    def set_workspace(self, chat_id, workspace):
+        with self.connect() as db:
+            db.execute('UPDATE chats SET workspace=? WHERE id=?', (str(workspace), chat_id))
+
+    def set_mode(self, chat_id, mode):
+        if mode not in {'chat', 'plan', 'agent'}:
+            raise ValueError('Choose Chat, Plan, or Agent mode.')
+        with self.connect() as db:
+            db.execute('UPDATE chats SET mode=? WHERE id=?', (mode, chat_id))
+
+    def begin_run(self, chat_id):
+        run_id = uuid.uuid4().hex
+        with self.connect() as db:
+            db.execute('INSERT INTO runs(id,chat_id,status,created) VALUES (?,?,?,?)', (run_id, chat_id, 'running', now()))
+        return run_id
+
+    def update_run(self, run_id, status=None, plan=None):
+        with self.connect() as db:
+            if status:
+                db.execute('UPDATE runs SET status=? WHERE id=?', (status, run_id))
+            if plan is not None:
+                db.execute('UPDATE runs SET plan=? WHERE id=?', (plan[:8000], run_id))
+
+    def add_event(self, run_id, name, status, detail):
+        event_id = uuid.uuid4().hex
+        with self.connect() as db:
+            db.execute('INSERT INTO tool_events VALUES (?,?,?,?,?,?)',
+                       (event_id, run_id, name, status, json.dumps(detail), now()))
+        return event_id
+
+    def event(self, event_id, chat_id):
+        with self.connect() as db:
+            row = db.execute('SELECT e.* FROM tool_events e JOIN runs r ON r.id=e.run_id WHERE e.id=? AND r.chat_id=?', (event_id, chat_id)).fetchone()
+        return dict(row, detail=json.loads(row['detail'])) if row else None
+
+    def update_event(self, event_id, status, detail=None):
+        with self.connect() as db:
+            if detail is None:
+                db.execute('UPDATE tool_events SET status=? WHERE id=?', (status, event_id))
+            else:
+                db.execute('UPDATE tool_events SET status=?,detail=? WHERE id=?', (status, json.dumps(detail), event_id))
+
+    def activity(self, chat_id):
+        with self.connect() as db:
+            runs = [dict(r) for r in db.execute('SELECT * FROM runs WHERE chat_id=? ORDER BY created DESC LIMIT 10', (chat_id,))]
+            events = [dict(e, detail=json.loads(e['detail'])) for e in db.execute('''
+                SELECT e.* FROM tool_events e JOIN runs r ON r.id=e.run_id
+                WHERE r.chat_id=? ORDER BY e.created DESC LIMIT 100''', (chat_id,))]
+        # Original file contents are retained for undo, but not copied to every UI poll.
+        for event in events:
+            event['detail'] = {k: v for k, v in event['detail'].items() if k not in {'before', 'after'}}
+        return {'runs': runs, 'events': events}

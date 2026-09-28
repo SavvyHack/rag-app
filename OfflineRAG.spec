@@ -9,6 +9,7 @@ for package in ('webview', 'llama_cpp', 'fastembed', 'onnxruntime'):
     hiddenimports += package_imports
 datas += copy_metadata('fastembed') + copy_metadata('huggingface_hub')
 datas += [('web', 'web')]
+datas += [('scripts/windows-ocr.ps1', 'scripts')]
 
 a = Analysis(
     ['app.py'], pathex=[], binaries=binaries, datas=datas,

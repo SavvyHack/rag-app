@@ -12,6 +12,7 @@ import sys
 import time
 
 from documents import extract_document
+from ocr import ImportCancelled
 
 LOG = logging.getLogger(__name__)
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
@@ -90,11 +91,12 @@ def completed_turns(messages):
 
 
 class PromptBuilder:
-    def __init__(self, llm, context_size, thinking_prefix=True, reply_tokens=768):
+    def __init__(self, llm, context_size, thinking_prefix=True, reply_tokens=768, system_prompt=SYSTEM_PROMPT):
         self.llm = llm
         self.context_size = context_size
         self.thinking_prefix = thinking_prefix
         self.reply_tokens = reply_tokens
+        self.system_prompt = system_prompt
 
     def count(self, text):
         return len(self.llm.tokenize(text.encode("utf-8"), add_bos=False, special=True))
@@ -106,7 +108,7 @@ class PromptBuilder:
         return self.llm.detokenize(tokens[:max(0, limit - 8)]).decode("utf-8", errors="ignore") + " [excerpt]"
 
     def render(self, query, turns, notes, recalled, sources, has_documents):
-        parts = [f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"]
+        parts = [f"<|im_start|>system\n{self.system_prompt}<|im_end|>\n"]
         for user, assistant in turns:
             parts += [f"<|im_start|>user\n{safe_text(user['content'])}<|im_end|>\n",
                       f"<|im_start|>assistant\n{safe_text(assistant['content'])}<|im_end|>\n"]
@@ -174,7 +176,7 @@ class PromptBuilder:
         return prompt, sources, self.count(prompt)
 
 
-def model_path(spec, directory, emit):
+def model_path(spec, directory, emit, offline=False):
     application = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
     candidates = [directory / "models" / spec.filename, application / "models" / spec.filename,
                   application.parent / "models" / spec.filename]
@@ -186,6 +188,8 @@ def model_path(spec, directory, emit):
             if digest != spec.sha256:
                 raise ValueError(f"The model file is incomplete or damaged: {candidate}. Move this file aside and press Load / retry to download it again.")
             return candidate
+    if offline:
+        raise RuntimeError('This model is not stored on this device yet. In Model settings, allow downloads while online, then load it once before working offline.')
     from huggingface_hub import hf_hub_download
     emit("status", f"Downloading {spec.label.split(' · ')[1]} ({spec.size / 1e9:.2f} GB). First setup needs internet…")
     from tqdm.auto import tqdm
@@ -218,7 +222,7 @@ class Engine:
     def load(self, profile, context_size, emit):
         from llama_cpp import Llama
         spec = MODELS[profile]
-        path = model_path(spec, self.store.directory, emit)
+        path = model_path(spec, self.store.directory, emit, offline=self.store.setting('offline_only', True))
         if self.llm:
             self.llm.close()
             self.llm = None
@@ -237,6 +241,7 @@ class Engine:
 
     def enable_semantic(self, emit, offline=False):
         from fastembed import TextEmbedding
+        offline = offline or self.store.setting('offline_only', True)
         emit("status", "Loading semantic search…" if offline else "Preparing semantic search (first setup downloads an embedding model)…")
         self.embedder = TextEmbedding(model_name=EMBEDDING_MODEL, cache_dir=str(self.store.directory / "embeddings"),
                                       threads=max(1, min(4, os.cpu_count() or 2)), providers=["CPUExecutionProvider"],
@@ -250,7 +255,9 @@ class Engine:
             name = Path(path).name
             emit("status", f"Reading {index + 1}/{len(paths)}: {name}")
             try:
-                digest, chunks = extract_document(path)
+                digest, chunks = extract_document(path, lambda text: emit('status', f'{name}: {text}'), cancel)
+                if cancel.is_set():
+                    break
                 if self.store.has_document(chat_id, digest):
                     successes.append(f"{name}: already attached")
                     continue
@@ -267,6 +274,8 @@ class Engine:
                         break
                 self.store.add_document(chat_id, name, digest, chunks, vectors, EMBEDDING_MODEL)
                 successes.append(f"{name}: {len(chunks)} sections saved")
+            except ImportCancelled:
+                break
             except Exception as error:
                 LOG.exception("Document import failed: %s", name)
                 errors.append(f"{name}: {error}")

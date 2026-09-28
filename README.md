@@ -1,10 +1,10 @@
 # Offline Local RAG
 
-A Windows desktop app for private local chat and questions about your files. No API key or cloud inference is used. First-time model downloads need internet, downloaded models and saved documents work offline.
+A Windows desktop app for private local chat, document research, and reviewed work on project files. No API key or cloud inference is used. OCR, document extraction, project tools, and installed models run on the device.
 
 ## Run
 
-Open `dist/OfflineRAG.exe`. The first launch loads **Qwen3.5 2B Q4_K_M**. A verified copy is in this project's `models` directory, which the executable can find. If you copy only the executable elsewhere, it downloads the selected model once into your user data folder. To avoid another download, copy the `models` folder next to the executable.
+Open `dist/OfflineRAG.exe`. The first launch loads **Qwen3.5 2B Q4_K_M**. A verified copy is in this project's `models` directory, which the executable can find. **Use cached models only** is enabled by default. If a model is missing, allow downloads in Model settings while online and load it once; then re-enable cached-only operation. For another computer, copy the `models` folder beside the executable before going offline.
 
 The previous executable is preserved as `dist/OfflineRAG.previous.exe`, and the version immediately before the frontend update is in `dist/OfflineRAG.before-frontend.exe`.
 
@@ -23,7 +23,25 @@ The interface uses Microsoft Edge WebView2, which is already installed on this c
 - **Stop** interrupts generation or file import after the current processing step. **Export chat** saves a readable Markdown transcript or JSON with messages, memory notes, and attachment metadata (not the full attachment contents).
 - Document excerpts are quoted reference data, separated from the user's request. HTML scripts are not executed or fetched; model role tokens in documents are neutralised. A small language model can still misunderstand adversarial text, so inspect its answers.
 
-Scanned image-only PDFs need OCR before import. Files are limited to 25 MB / 2 million extracted characters / 2,500 sections each, and 10,000 sections per chat. Large documents are searched rather than supplied in full; broad summaries may omit material outside the selected excerpts.
+Scanned PDFs are read automatically with Windows' on-device OCR. Sparse pages and pages containing images also receive OCR, including mixed text/scan PDFs. Progress shows the current page; Stop cancels the OCR worker. Text and page references are saved together only after extraction succeeds. Reattach PDFs rejected by an older version: those failed imports did not save their contents.
+
+PNG, JPEG, BMP, TIFF, Word (`.docx`), Excel (`.xlsx`), PowerPoint (`.pptx`), and common source-code files are also accepted. OCR extracts text, not general visual reasoning about diagrams or photos. OCR quality depends on scan clarity and installed Windows recognition languages. Office files are read without running macros or external links. Excel values are saved/cached values; formulas are not recalculated. TIFF import currently reads the first frame only. Office images are not OCRed unless attached separately.
+
+Files are limited to 25 MB / 2 million extracted characters / 2,500 sections each, and 10,000 sections per chat. PDFs are limited to 500 pages, Office archives to 50 MB expanded. Large documents are searched rather than supplied in full; broad summaries may omit material outside the selected excerpts.
+
+## Offline workspace
+
+- **Chat** answers questions and reads attached files. It cannot execute tools.
+- **Plan** inspects a selected project, searches and reads files, extracts documents, and records a plan. It cannot write files or run commands.
+- **Agent** runs a local model tool loop (up to 16 steps per request). It can inspect files, search text, read documents with OCR, create plans, propose text/code/Markdown/CSV/HTML files, and propose PowerShell commands. After reviewing results, ask it to continue for longer tasks.
+- **Workspace → Choose folder** selects a project through the native folder picker. Switching into Plan or Agent without choosing a project creates an empty workspace in the app data folder. **Project files** previews text files; **Open folder** opens the folder in Explorer.
+- **Review action** shows the exact file diff or command. **Apply change / Run command** approves one action; **Reject** declines it. Closing the review leaves it pending. Stop cancels pending work. File edits refuse to overwrite a file changed after the proposal, and **Undo edit** restores the exact original bytes when the file is still unchanged since that edit.
+- **Activity** retains plans, tool results, command output, and review decisions in the chat database. Commands have a 60-second limit and bounded output. The file list shows up to 300 entries (the model can list 500); file reads are paginated and searches are bounded. Private/generated folders are excluded from file tools.
+- **Workflows** provides editable starting prompts for document research, project review, implementing changes, spreadsheets as CSV, and documents as Markdown. **Duplicate chat** copies a conversation, notes, and attached text into a new chat. A duplicated project chat uses the same project folder.
+
+File tools check that paths stay inside the chosen project. **Approved commands are not an operating-system sandbox**: they run with your Windows account and can reach other files or the network. Cached-only model settings control model/embedding downloads, not arbitrary commands or links you open. Only approve commands you trust. Tool outputs and documents are treated as reference data, not user instructions.
+
+The small bundled models have limited coding and planning ability; inspect their proposed work. This is a local assistant workspace, not complete Codex feature parity. It does not include Codex's proprietary models, hosted agents, cloud connectors, live web search, voice, browser/computer automation, image generation, MCP/plugin execution, scheduled background tasks, multiple agents, or Git worktree management. Those require separate implementations and, for online services, connectivity. The supported local workflow is based on the public [Codex feature overview](https://learn.chatgpt.com/docs/features); Windows OCR uses [Microsoft's local OcrEngine](https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine).
 
 ## Storage
 
@@ -67,7 +85,7 @@ The smoke test uses temporary synthetic chats, exercises real CPU inference, and
 
 `requirements.txt` contains the direct pinned dependencies. `requirements-lock.txt` records the validated Python environment's full pins. `package-lock.json` pins frontend and browser-test dependencies. `npm run build` produces the checked-in `web/assets` bundle and fonts; rebuild it after editing `frontend/`. The browser tests use installed Microsoft Edge and synthetic chats. Building llama-cpp-python without a matching wheel requires CMake and a supported C++ compiler.
 
-Implementation: `app.py` hosts the bundled interface in a native WebView2 window; `controller.py` serialises desktop actions and manages background workers; `frontend/` implements the layout and safe rich-text rendering; `storage.py` owns SQLite transactions and the additive folder migration. `documents.py` and `rag_engine.py` handle extraction, retrieval, memory, and inference. PyInstaller includes web assets, math fonts, WebView2 integration, and native inference/embedding libraries. Detailed failures go to the rotating `app.log`; the UI offers **View details** and **Model settings → Load / retry**. Model controls are also available from the model name below the composer; semantic search is under **Files**; rename, export, and delete are under the chat's **…** menu.
+Implementation: `app.py` hosts the bundled interface in a native WebView2 window; `controller.py` serialises desktop actions and manages workers; `frontend/` implements the layout and safe rendering; `storage.py` owns SQLite transactions and additive migrations. `documents.py`, `ocr.py`, and the bundled `scripts/windows-ocr.ps1` handle native extraction. `rag_engine.py` handles retrieval and inference; `agent.py` implements schema-constrained tool requests and review pauses; `workspace.py` implements file tools, checked edits, Undo, and reviewed commands. PyInstaller includes the OCR helper, web assets, math fonts, WebView2 integration, and native inference/embedding libraries. Detailed failures go to the rotating `app.log`. The extended smoke-test options `--ocr --agent` exercise real scanned-PDF extraction and a real local-model edit using synthetic files only.
 
 ## Setup Instructions
 ```powershell
